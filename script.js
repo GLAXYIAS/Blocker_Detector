@@ -6,7 +6,6 @@ async function checkURLs() {
     const output = document.getElementById('resultsOutput');
     const blockerKey = document.getElementById('blockerSelect').value;
     
-    // Parse the URLs
     const urls = input.split(/[,\n]/).map(u => u.trim()).filter(u => u !== "");
 
     if (urls.length === 0) {
@@ -14,16 +13,16 @@ async function checkURLs() {
         return;
     }
 
-    output.innerHTML = "<strong>Running Network Audit...</strong>";
+    output.innerHTML = "<strong>Auditing Network...</strong>";
     let resultsHTML = "<ul>";
 
-    // Load the blockers.json signatures
+    // Try to load blockers.json for signatures
     let blockerData = {};
     try {
         const bRes = await fetch('blockers.json');
         blockerData = await bRes.json();
     } catch (e) {
-        console.error("Could not load blockers.json, using defaults.");
+        console.warn("Using default signatures.");
     }
 
     const activeBlocker = blockerData[blockerKey] || { signature: "blocked", indicators: [] };
@@ -32,52 +31,42 @@ async function checkURLs() {
         let formattedUrl = url.startsWith('http') ? url : `https://${url}`;
         
         try {
-            // STEP 1: The Local Timing Test
-            // We try to fetch the site from the Chromebook. 
-            // If it's "too fast," it's a local intercept (Linewize).
+            // STEP 1: Local Speed Test (To detect instant local filter redirects)
             const start = performance.now();
-            const localCheck = await fetch(formattedUrl, { mode: 'no-cors' }).catch(() => null);
-            const duration = performance.now() - start;
+            await fetch(formattedUrl, { mode: 'no-cors' }).catch(() => null);
+            const localDuration = performance.now() - start;
 
-            // STEP 2: The Worker Check
-            // Ask Cloudflare what the real site is doing.
-            const workerCheck = await fetch(`${WORKER_URL}?url=${encodeURIComponent(formattedUrl)}`);
-            const data = await workerCheck.json();
+            // STEP 2: Worker Check (To see if the real internet can see it)
+            const workerResponse = await fetch(`${WORKER_URL}?url=${encodeURIComponent(formattedUrl)}`);
+            
+            if (!workerResponse.ok) {
+                resultsHTML += `<li><strong>${url}</strong>: <span style="color: gray;">Worker Error</span></li>`;
+                continue;
+            }
 
-            // STEP 3: The Detection Logic
-            let status = "clean";
-            let reason = "";
+            const data = await workerResponse.json();
 
-            // Check if Worker was redirected to a block page signature
-            const redirectedToBlock = data.finalUrl && (
+            // STEP 3: Detection Logic
+            // Check for the Linewize redirect in the Worker's final URL
+            const hasBlockSignature = data.finalUrl && (
                 data.finalUrl.includes(activeBlocker.signature) || 
                 (activeBlocker.indicators && activeBlocker.indicators.some(i => data.finalUrl.includes(i)))
             );
 
-            if (redirectedToBlock) {
-                status = "blocked";
-                reason = "Filter Redirect Detected";
-            } else if (duration < 150 && formattedUrl.includes("cornhub")) { 
-                // Detection for the specific site you mentioned
-                status = "blocked";
-                reason = "Local Intercept (Too Fast)";
-            } else if (!data.reachable) {
-                status = "down";
-                reason = "Site Unreachable";
-            }
+            // A local block often responds in < 100ms. A real website over Wi-Fi rarely does.
+            const isSuspiciouslyFast = localDuration < 100;
 
-            // Generate HTML
-            if (status === "blocked") {
-                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #cf222e;">🛑 BLOCKED (${reason})</span></li>`;
-            } else if (status === "down") {
-                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #bc8c00;">⚠️ DOWN/OFFLINE</span></li>`;
-            } else {
+            if (hasBlockSignature || (isSuspiciouslyFast && !data.reachable)) {
+                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #cf222e;">🛑 BLOCKED</span></li>`;
+            } else if (data.reachable) {
                 resultsHTML += `<li><strong>${url}</strong>: <span style="color: #1a7f37;">✅ ACCESSIBLE</span></li>`;
+            } else {
+                // If the worker says it's not reachable AND the local check failed
+                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #bc8c00;">⚠️ DOWN/OFFLINE</span></li>`;
             }
 
         } catch (err) {
-            resultsHTML += `<li><strong>${url}</strong>: <span style="color: #6e7781;">❌ ERROR (Check Console)</span></li>`;
-            console.error(err);
+            resultsHTML += `<li><strong>${url}</strong>: <span style="color: #cf222e;">❌ WORKER BLOCKED</span></li>`;
         }
     }
 
