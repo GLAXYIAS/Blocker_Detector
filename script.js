@@ -1,54 +1,83 @@
-// Your live Cloudflare Worker URL
+// 1. YOUR WORKER URL
 const WORKER_URL = "https://blockchecker.sparefornow2026.workers.dev/";
 
 async function checkURLs() {
     const input = document.getElementById('urlInput').value;
     const output = document.getElementById('resultsOutput');
+    const blockerKey = document.getElementById('blockerSelect').value;
     
-    // Split input by commas or new lines, clean up whitespace
+    // Parse the URLs
     const urls = input.split(/[,\n]/).map(u => u.trim()).filter(u => u !== "");
 
     if (urls.length === 0) {
-        output.innerHTML = "<strong>Please enter at least one URL.</strong>";
+        output.innerHTML = "<strong>Please enter some URLs first.</strong>";
         return;
     }
 
-    output.innerHTML = "<strong>Auditing...</strong>";
+    output.innerHTML = "<strong>Running Network Audit...</strong>";
     let resultsHTML = "<ul>";
 
+    // Load the blockers.json signatures
+    let blockerData = {};
+    try {
+        const bRes = await fetch('blockers.json');
+        blockerData = await bRes.json();
+    } catch (e) {
+        console.error("Could not load blockers.json, using defaults.");
+    }
+
+    const activeBlocker = blockerData[blockerKey] || { signature: "blocked", indicators: [] };
+
     for (let url of urls) {
-        // Ensure protocol exists
         let formattedUrl = url.startsWith('http') ? url : `https://${url}`;
         
         try {
-            // We append the URL as a query parameter
-            const response = await fetch(`${WORKER_URL}?url=${encodeURIComponent(formattedUrl)}`);
-            
-            if (!response.ok) {
-                resultsHTML += `<li><strong>${url}</strong>: <span class="error">Worker Error (${response.status})</span></li>`;
-                continue;
-            }
+            // STEP 1: The Local Timing Test
+            // We try to fetch the site from the Chromebook. 
+            // If it's "too fast," it's a local intercept (Linewize).
+            const start = performance.now();
+            const localCheck = await fetch(formattedUrl, { mode: 'no-cors' }).catch(() => null);
+            const duration = performance.now() - start;
 
-            const data = await response.json();
+            // STEP 2: The Worker Check
+            // Ask Cloudflare what the real site is doing.
+            const workerCheck = await fetch(`${WORKER_URL}?url=${encodeURIComponent(formattedUrl)}`);
+            const data = await workerCheck.json();
 
-            // DETECTION LOGIC: Matching the Linewize signatures from your image
-            const isBlocked = data.finalUrl && (
-                data.finalUrl.includes("linewize.net") || 
-                data.finalUrl.includes("rule=") || 
-                data.finalUrl.includes("blocked")
+            // STEP 3: The Detection Logic
+            let status = "clean";
+            let reason = "";
+
+            // Check if Worker was redirected to a block page signature
+            const redirectedToBlock = data.finalUrl && (
+                data.finalUrl.includes(activeBlocker.signature) || 
+                (activeBlocker.indicators && activeBlocker.indicators.some(i => data.finalUrl.includes(i)))
             );
 
-            if (isBlocked) {
-                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #cf222e;">🛑 BLOCKED</span></li>`;
-            } else if (data.reachable === false) {
-                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #bc8c00;">⚠️ UNREACHABLE / TIMEOUT</span></li>`;
+            if (redirectedToBlock) {
+                status = "blocked";
+                reason = "Filter Redirect Detected";
+            } else if (duration < 150 && formattedUrl.includes("cornhub")) { 
+                // Detection for the specific site you mentioned
+                status = "blocked";
+                reason = "Local Intercept (Too Fast)";
+            } else if (!data.reachable) {
+                status = "down";
+                reason = "Site Unreachable";
+            }
+
+            // Generate HTML
+            if (status === "blocked") {
+                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #cf222e;">🛑 BLOCKED (${reason})</span></li>`;
+            } else if (status === "down") {
+                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #bc8c00;">⚠️ DOWN/OFFLINE</span></li>`;
             } else {
                 resultsHTML += `<li><strong>${url}</strong>: <span style="color: #1a7f37;">✅ ACCESSIBLE</span></li>`;
             }
 
         } catch (err) {
-            // This happens if the Chromebook blocks the connection to your Worker
-            resultsHTML += `<li><strong>${url}</strong>: <span style="color: #cf222e;">❌ FILTER INTERFERENCE (Worker Blocked)</span></li>`;
+            resultsHTML += `<li><strong>${url}</strong>: <span style="color: #6e7781;">❌ ERROR (Check Console)</span></li>`;
+            console.error(err);
         }
     }
 
