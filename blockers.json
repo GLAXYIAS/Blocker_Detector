@@ -1,1 +1,18 @@
-
+{
+  "goguardian": {
+    "name": "GoGuardian",
+    "signature": "blocked.goguardian.com"
+  },
+  "linewize": {
+    "name": "Linewize",
+    "signature": "family.linewize.net"
+  },
+  "securly": {
+    "name": "Securly",
+    "signature": "blocked.securly.com"
+  },
+  "generic": {
+    "name": "Generic Filter",
+    "signature": null
+  }
+}
