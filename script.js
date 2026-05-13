@@ -1,75 +1,67 @@
-// 1. YOUR WORKER URL
 const WORKER_URL = "https://blockchecker.sparefornow2026.workers.dev/";
 
 async function checkURLs() {
     const input = document.getElementById('urlInput').value;
     const output = document.getElementById('resultsOutput');
-    const blockerKey = document.getElementById('blockerSelect').value;
-    
     const urls = input.split(/[,\n]/).map(u => u.trim()).filter(u => u !== "");
 
     if (urls.length === 0) {
-        output.innerHTML = "<strong>Please enter some URLs first.</strong>";
+        output.innerHTML = "<strong>Please enter URLs.</strong>";
         return;
     }
 
-    output.innerHTML = "<strong>Auditing Network...</strong>";
+    output.innerHTML = "<strong>Analyzing Filter Response...</strong>";
     let resultsHTML = "<ul>";
-
-    // Try to load blockers.json for signatures
-    let blockerData = {};
-    try {
-        const bRes = await fetch('blockers.json');
-        blockerData = await bRes.json();
-    } catch (e) {
-        console.warn("Using default signatures.");
-    }
-
-    const activeBlocker = blockerData[blockerKey] || { signature: "blocked", indicators: [] };
 
     for (let url of urls) {
         let formattedUrl = url.startsWith('http') ? url : `https://${url}`;
         
         try {
-            // STEP 1: Local Speed Test (To detect instant local filter redirects)
-            const start = performance.now();
-            await fetch(formattedUrl, { mode: 'no-cors' }).catch(() => null);
-            const localDuration = performance.now() - start;
+            // 1. Worker Check: Does the site exist on the real internet?
+            const workerReq = await fetch(`${WORKER_URL}?url=${encodeURIComponent(formattedUrl)}`);
+            const workerData = await workerReq.json();
 
-            // STEP 2: Worker Check (To see if the real internet can see it)
-            const workerResponse = await fetch(`${WORKER_URL}?url=${encodeURIComponent(formattedUrl)}`);
+            // 2. Linewize Detection: 
+            // We try to "fetch" the block page directly. 
+            // If this succeeds OR the timing is instant, it's a block.
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 2000);
             
-            if (!workerResponse.ok) {
-                resultsHTML += `<li><strong>${url}</strong>: <span style="color: gray;">Worker Error</span></li>`;
-                continue;
+            let isBlocked = false;
+            try {
+                // We check if we can reach the Linewize block server from your Chromebook
+                const lwCheck = await fetch("https://blocked.syd-1.linewize.net/favicon.ico", { 
+                    mode: 'no-cors', 
+                    signal: controller.signal 
+                });
+                
+                // If the worker says the site is fine, but our local request 
+                // to the target URL behaves strangely, we flag it.
+                const localStart = performance.now();
+                await fetch(formattedUrl, { mode: 'no-cors', signal: controller.signal });
+                const duration = performance.now() - localStart;
+
+                // If the response is faster than 100ms, it's a local intercept
+                if (duration < 100) isBlocked = true;
+                
+            } catch (e) {
+                // If the request fails but the worker says it's up, it's blocked
+                if (workerData.reachable) isBlocked = true;
             }
+            clearTimeout(timeout);
 
-            const data = await workerResponse.json();
-
-            // STEP 3: Detection Logic
-            // Check for the Linewize redirect in the Worker's final URL
-            const hasBlockSignature = data.finalUrl && (
-                data.finalUrl.includes(activeBlocker.signature) || 
-                (activeBlocker.indicators && activeBlocker.indicators.some(i => data.finalUrl.includes(i)))
-            );
-
-            // A local block often responds in < 100ms. A real website over Wi-Fi rarely does.
-            const isSuspiciouslyFast = localDuration < 100;
-
-            if (hasBlockSignature || (isSuspiciouslyFast && !data.reachable)) {
-                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #cf222e;">🛑 BLOCKED</span></li>`;
-            } else if (data.reachable) {
+            // 3. Final Result Logic
+            if (isBlocked || (workerData.finalUrl && workerData.finalUrl.includes("linewize.net"))) {
+                resultsHTML += `<li><strong>${url}</strong>: <span style="color: #cf222e;">🛑 BLOCKED (Linewize)</span></li>`;
+            } else if (workerData.reachable) {
                 resultsHTML += `<li><strong>${url}</strong>: <span style="color: #1a7f37;">✅ ACCESSIBLE</span></li>`;
             } else {
-                // If the worker says it's not reachable AND the local check failed
                 resultsHTML += `<li><strong>${url}</strong>: <span style="color: #bc8c00;">⚠️ DOWN/OFFLINE</span></li>`;
             }
 
         } catch (err) {
-            resultsHTML += `<li><strong>${url}</strong>: <span style="color: #cf222e;">❌ WORKER BLOCKED</span></li>`;
+            resultsHTML += `<li><strong>${url}</strong>: <span style="color: gray;">❌ Error Checking Site</span></li>`;
         }
     }
-
-    resultsHTML += "</ul>";
-    output.innerHTML = resultsHTML;
+    output.innerHTML = resultsHTML + "</ul>";
 }
