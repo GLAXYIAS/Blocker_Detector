@@ -3,14 +3,32 @@
     "name": "GoGuardian",
     "signature": "blocked.goguardian.com"
   },
+
   "linewize": {
     "name": "Linewize",
-    "signature": "family.linewize.net"
+    "signature": "blocked.syd-1.linewize.net",
+
+    "generator": {
+      "base": "https://blocked.syd-1.linewize.net/blocked",
+      "deviceid": "PHYS-SMIC-US-0000-2288",
+      "user": "198474",
+      "method": "rule_match",
+
+      "categories": [
+        "Offensive",
+        "Proxies and VPNs",
+        "Adult",
+        "Gaming",
+        "Malware"
+      ]
+    }
   },
+
   "securly": {
     "name": "Securly",
     "signature": "blocked.securly.com"
   },
+
   "generic": {
     "name": "Generic Filter",
     "signature": null
